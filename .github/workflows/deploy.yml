@@ -1,123 +1,72 @@
-name: Deploy Flask App to EC2
+name: Deploy Flask App
 
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: "Deployment environment"
+        description: 'The environment to deploy to'
         required: true
-        default: "test"
-
-concurrency:
-  group: deploy-${{ github.ref }}
-  cancel-in-progress: true
+        default: 'dev'
+        type: choice
+        options:
+          - production
+          - qa
+          - dev
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
-
+    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-      - name: Create SSH key file
+      - name: Deploy to EC2
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
+          HOST: ${{ secrets.EC2_HOST }}
         run: |
-          echo "${{ secrets.EC2_SSH_KEY }}" > ec2_key.pem
-          chmod 600 ec2_key.pem
-
-      - name: Ensure base packages on EC2 (python3-venv, pip, rsync)
-        run: |
-          ssh -o StrictHostKeyChecking=no -i ec2_key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
+          # Setup SSH
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H $HOST >> ~/.ssh/known_hosts
+          
+          # Copy app files to EC2
+          scp -i ~/.ssh/id_rsa -r app.py requirements.txt ubuntu@$HOST:/tmp/
+          
+          # Deploy on EC2
+          ssh -i ~/.ssh/id_rsa ubuntu@$HOST << 'ENDSSH'
             set -e
-            sudo apt-get update -y
-            sudo apt-get install -y python3-venv python3-pip rsync
-          "
-
-      - name: Ensure directory structure
-        run: |
-          ssh -o StrictHostKeyChecking=no -i ec2_key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
-            set -e
-            sudo mkdir -p /opt/flask-app/app /opt/flask-app/logs
-            sudo chown -R ubuntu:ubuntu /opt/flask-app
-          "
-
-      - name: Sync code to EC2
-        run: |
-          rsync -avz --delete \
-            --exclude '.git' --exclude '__pycache__' --exclude '.github' \
-            -e "ssh -o StrictHostKeyChecking=no -i ec2_key.pem" \
-            . ubuntu@${{ secrets.EC2_PUBLIC_IP }}:/opt/flask-app/app
-
-      - name: Create/refresh virtualenv & install deps
-        run: |
-          ssh -o StrictHostKeyChecking=no -i ec2_key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
-            set -e
-            cd /opt/flask-app/app
-            [ -d venv ] || python3 -m venv venv
-            . venv/bin/activate
-            python -m pip install --upgrade pip
-            if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-            pip install gunicorn
-          "
-
-      - name: Create/refresh flaskapp systemd unit (Gunicorn)
-        run: |
-          ssh -o StrictHostKeyChecking=no -i ec2_key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
-            set -e
-            sudo bash -s <<'EOF'
-            cat >/etc/systemd/system/flaskapp.service <<'UNIT'
-            [Unit]
-            Description=Flask app (Gunicorn)
-            After=network.target
-
-            [Service]
-            User=ubuntu
-            Group=ubuntu
-            WorkingDirectory=/opt/flask-app/app
-            Environment=PYTHONUNBUFFERED=1
-            ExecStart=/opt/flask-app/app/venv/bin/gunicorn --workers 3 --bind 0.0.0.0:5000 app:app
-            Restart=always
-            RestartSec=3
-
-            [Install]
-            WantedBy=multi-user.target
-            UNIT
-
-            systemctl daemon-reload
-            systemctl enable flaskapp
-            systemctl restart flaskapp
-            systemctl status flaskapp --no-pager || true
-            EOF
-          "
-
-      - name: Restart Prometheus
-        run: |
-          ssh -o StrictHostKeyChecking=no -i ec2_key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
-            sudo systemctl restart prometheus || true
-            sudo systemctl status prometheus --no-pager || true
-          "
-
-      - name: Restart Grafana
-        run: |
-          ssh -o StrictHostKeyChecking=no -i ec2_key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
-            sudo systemctl restart grafana-server || true
-            sudo systemctl status grafana-server --no-pager || true
-          "
-
-      - name: Health check Flask (retry)
-        run: |
-          for i in {1..10}; do
-            if curl -fsI http://${{ secrets.EC2_PUBLIC_IP }}:5000 >/dev/null; then
-              echo "Flask OK"; exit 0
-            fi
-            echo "Waiting for Flask... ($i/10)"
+            
+            # Move files to app directory
+            sudo cp /tmp/app.py /opt/flask-app/
+            sudo cp /tmp/requirements.txt /opt/flask-app/
+            
+            # Install dependencies
+            cd /opt/flask-app
+            sudo /opt/flask-app/venv/bin/pip install -r requirements.txt
+            
+            # Restart Flask app
+            sudo systemctl restart flask-app
+            
+            # Wait and check status
             sleep 3
-          done
-          echo "Flask did not become healthy in time"; exit 1
+            sudo systemctl status flask-app --no-pager
+          ENDSSH
 
-      - name: Health check Prometheus
-        run: curl -fsI http://${{ secrets.EC2_PUBLIC_IP }}:9090
-
-      - name: Health check Grafana
-        run: curl -fsI http://${{ secrets.EC2_PUBLIC_IP }}:3000
+      - name: Health Check
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          echo "Waiting for app to start..."
+          sleep 5
+          
+          # Test health endpoint
+          if curl -f http://$HOST:5000/health; then
+            echo "✅ Deployment successful!"
+            echo "🌐 App: http://$HOST:5000"
+          else
+            echo "❌ Health check failed"
+            exit 1
+          fi

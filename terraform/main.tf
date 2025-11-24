@@ -90,7 +90,7 @@ resource "aws_instance" "app" {
     volume_type = "gp3"
   }
 
-  user_data = <<-EOF
+   user_data = <<-EOF
               #!/bin/bash
               set -e
               exec > >(tee /var/log/user-data.log)
@@ -103,7 +103,7 @@ resource "aws_instance" "app" {
               apt-get upgrade -y
 
               # Install Python and dependencies
-              apt-get install -y python3 python3-pip python3-venv wget curl
+              apt-get install -y python3 python3-pip python3-venv wget curl git
 
               # Create app directory
               mkdir -p /opt/flask-app
@@ -171,16 +171,36 @@ resource "aws_instance" "app" {
                   isDefault: true
               GRAF
 
-              # Start services
+              # Create Flask systemd service
+              cat > /etc/systemd/system/flask-app.service <<'FLASKSVC'
+              [Unit]
+              Description=Flask Application
+              After=network.target
+
+              [Service]
+              Type=simple
+              User=root
+              WorkingDirectory=/opt/flask-app
+              Environment="PATH=/opt/flask-app/venv/bin"
+              ExecStart=/opt/flask-app/venv/bin/gunicorn --bind 0.0.0.0:5000 --workers 2 app:app
+              Restart=always
+
+              [Install]
+              WantedBy=multi-user.target
+              FLASKSVC
+
+              # Set permissions for deployment
+              chown -R ubuntu:ubuntu /opt/flask-app
+
+              # Start monitoring services
               systemctl daemon-reload
               systemctl enable prometheus
               systemctl start prometheus
               systemctl enable grafana-server
               systemctl start grafana-server
 
-              echo "Setup complete!"
+              echo "Setup complete! Ready for GitHub Actions deployment."
               EOF
-
   tags = {
     Name = "flask-app-instance"
   }
@@ -208,16 +228,3 @@ output "prometheus_url" {
   value = "http://${aws_instance.app.public_ip}:9090"
 }
 
-output "next_steps" {
-  value = <<-EOT
-  
-  ✅ Instance created! Wait ~3 minutes for setup to complete.
-  
-  Then SSH in:
-    ssh -i ${var.key_name}.pem ubuntu@${aws_instance.app.public_ip}
-  
-  Check services:
-    sudo systemctl status prometheus
-    sudo systemctl status grafana-server
-  EOT
-}
