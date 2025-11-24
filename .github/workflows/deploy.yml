@@ -39,12 +39,23 @@ jobs:
           ssh -i ~/.ssh/id_rsa ubuntu@$HOST << 'ENDSSH'
             set -e
             
+            # Create app directory if it doesn't exist
+            sudo mkdir -p /opt/flask-app
+            
             # Move files to app directory
             sudo cp /tmp/app.py /opt/flask-app/
             sudo cp /tmp/requirements.txt /opt/flask-app/
             
+            # Create virtual environment if it doesn't exist
+            if [ ! -d "/opt/flask-app/venv" ]; then
+              echo "Creating virtual environment..."
+              cd /opt/flask-app
+              sudo python3 -m venv venv
+            fi
+            
             # Install dependencies
             cd /opt/flask-app
+            sudo /opt/flask-app/venv/bin/pip install --upgrade pip
             sudo /opt/flask-app/venv/bin/pip install -r requirements.txt
             
             # Restart Flask app
