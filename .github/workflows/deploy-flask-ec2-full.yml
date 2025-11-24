@@ -67,14 +67,11 @@ jobs:
             set -euo pipefail
             sudo mkdir -p /opt/flask-app
             sudo chown -R ubuntu:ubuntu /opt/flask-app
-            # Create venv at a fixed, absolute path
             python3 -m venv /opt/flask-app/venv || true
-            # Use absolute venv executables (no 'source' needed)
             /opt/flask-app/venv/bin/python -m pip install --upgrade pip
             [ -f /opt/flask-app/requirements.txt ] && /opt/flask-app/venv/bin/pip install -r /opt/flask-app/requirements.txt || true
             /opt/flask-app/venv/bin/pip install gunicorn
           "
-
 
       - name: Create/refresh systemd unit (flask-app.service)
         env:
@@ -94,7 +91,8 @@ jobs:
             Group=ubuntu
             WorkingDirectory=/opt/flask-app
             Environment=PYTHONUNBUFFERED=1
-            ExecStart=/opt/flask-app/venv/bin/gunicorn --workers 3 --bind 0.0.0.0:5000 app:app
+            # If your entry is wsgi.py, change to wsgi:app
+            ExecStart=/opt/flask-app/venv/bin/gunicorn --workers 3 --chdir /opt/flask-app --bind 0.0.0.0:5000 app:app
             Restart=always
             RestartSec=3
             ExecStartPre=/usr/bin/test -x /opt/flask-app/venv/bin/gunicorn
@@ -111,14 +109,40 @@ jobs:
             EOF
           "
 
-      - name: Health Check (retry)
+      - name: Diagnose service on EC2
+        if: always()
         env:
           HOST: ${{ secrets.EC2_HOST }}
         run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ubuntu@"$HOST" "
+            set -e
+            echo '=== systemctl status ==='
+            sudo systemctl status flask-app --no-pager || true
+            echo
+            echo '=== last 200 logs ==='
+            sudo journalctl -u flask-app -n 200 --no-pager || true
+            echo
+            echo '=== listening sockets ==='
+            sudo ss -lntp | sed -n '1,200p' | cat || true
+            echo
+            echo '=== processes mentioning gunicorn ==='
+            ps aux | grep -i gunicorn | grep -v grep || true
+            echo
+            echo '=== file layout ==='
+            ls -la /opt/flask-app || true
+          "
+
+      - name: Health Check (retry on /health then /)
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          echo "Checking app health..."
           for i in {1..10}; do
-            if curl -fsS http://$HOST:5000/health >/dev/null; then
-              echo "✅ App healthy"
-              exit 0
+            if curl -fsS "http://$HOST:5000/health" >/dev/null; then
+              echo "✅ /health OK"; exit 0
+            fi
+            if curl -fsS "http://$HOST:5000/" >/dev/null; then
+              echo "✅ / OK"; exit 0
             fi
             echo "Waiting for app... ($i/10)"
             sleep 3
