@@ -1,12 +1,12 @@
-name: Basic Workflow Dispatch Example
+name: Deploy Flask App to EC2
 
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'The environment to deploy to'
+        description: "Deployment environment"
         required: true
-        default: 'staging'
+        default: "test"
 
 jobs:
   deploy:
@@ -21,10 +21,68 @@ jobs:
           echo "${{ secrets.EC2_SSH_KEY }}" > ec2_key.pem
           chmod 600 ec2_key.pem
 
-      - name: Copy app to EC2
+      # Ensure the directory structure exists on EC2
+      - name: Ensure directory structure exists
         run: |
-          scp -o StrictHostKeyChecking=no -i ec2_key.pem -r . ubuntu@${{ secrets.EC2_PUBLIC_IP }}:/opt/flask-app/app
+          ssh -o StrictHostKeyChecking=no -i ec2_key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
+            sudo mkdir -p /opt/flask-app/app &&
+            sudo mkdir -p /opt/flask-app/logs &&
+            sudo chown ubuntu:ubuntu /opt/flask-app -R
+          "
 
-      - name: Restart flask service
+      # Sync code using rsync (faster and safer than scp)
+      - name: Sync app to EC2
         run: |
-          ssh -o StrictHostKeyChecking=no -i ec2_key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "sudo systemctl restart flaskapp"
+          rsync -avz --exclude '.git' --exclude '__pycache__' -e "ssh -o StrictHostKeyChecking=no -i ec2_key.pem" \
+          . ubuntu@${{ secrets.EC2_PUBLIC_IP }}:/opt/flask-app/app
+
+      # Create virtual environment and install requirements
+      - name: Install Python dependencies
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ec2_key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
+            cd /opt/flask-app/app &&
+            python3 -m venv venv ||
+            echo 'venv exists' &&
+            source venv/bin/activate &&
+            pip install --upgrade pip &&
+            pip install -r requirements.txt
+          "
+
+      # Restart Flask systemd service
+      - name: Restart Flask (Gunicorn) service
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ec2_key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
+            sudo systemctl restart flaskapp &&
+            sudo systemctl status flaskapp --no-pager
+          "
+
+      # Restart Prometheus
+      - name: Restart Prometheus
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ec2_key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
+            sudo systemctl restart prometheus &&
+            sudo systemctl status prometheus --no-pager
+          "
+
+      # Restart Grafana
+      - name: Restart Grafana
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ec2_key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
+            sudo systemctl restart grafana-server &&
+            sudo systemctl status grafana-server --no-pager
+          "
+
+      # Health check Flask app
+      - name: Verify Flask app health
+        run: |
+          curl -I http://${{ secrets.EC2_PUBLIC_IP }}:5000 || exit 1
+
+      # Health check Prometheus
+      - name: Verify Prometheus health
+        run: |
+          curl -I http://${{ secrets.EC2_PUBLIC_IP }}:9090 || exit 1
+
+      # Health check Grafana
+      - name: Verify Grafana health
+        run: |
+          curl -I http://${{ secrets.EC2_PUBLIC_IP }}:3000 || exit 1
