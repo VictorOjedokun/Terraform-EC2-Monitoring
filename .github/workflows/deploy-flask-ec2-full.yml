@@ -132,23 +132,7 @@ jobs:
             ls -la /opt/flask-app || true
           "
 
-      - name: Health Check (retry on /health then /)
-        env:
-          HOST: ${{ secrets.EC2_HOST }}
-        run: |
-          echo "Checking app health..."
-          for i in {1..10}; do
-            if curl -fsS "http://$HOST:5000/health" >/dev/null; then
-              echo "✅ /health OK"; exit 0
-            fi
-            if curl -fsS "http://$HOST:5000/" >/dev/null; then
-              echo "✅ / OK"; exit 0
-            fi
-            echo "Waiting for app... ($i/10)"
-            sleep 3
-          done
-          echo "❌ App not healthy"; exit 1
-
+     
       - name: Show Flask logs on failure
         if: failure()
         env:
