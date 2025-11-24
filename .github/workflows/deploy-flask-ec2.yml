@@ -59,19 +59,22 @@ jobs:
         run: |
           rsync -avz --delete             --exclude '.git' --exclude '__pycache__' --exclude '.github'             -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa"             ./ ubuntu@"$HOST":/opt/flask-app/
 
-      - name: Create/refresh venv & install dependencies
+      - name: Create/refresh venv & install dependencies (absolute path)
         env:
           HOST: ${{ secrets.EC2_HOST }}
         run: |
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ubuntu@"$HOST" "
-            set -e
-            cd /opt/flask-app
-            [ -d venv ] || python3 -m venv venv
-            . venv/bin/activate
-            python -m pip install --upgrade pip
-            [ -f requirements.txt ] && pip install -r requirements.txt || true
-            pip install gunicorn
+            set -euo pipefail
+            sudo mkdir -p /opt/flask-app
+            sudo chown -R ubuntu:ubuntu /opt/flask-app
+            # Create venv at a fixed, absolute path
+            python3 -m venv /opt/flask-app/venv || true
+            # Use absolute venv executables (no 'source' needed)
+            /opt/flask-app/venv/bin/python -m pip install --upgrade pip
+            [ -f /opt/flask-app/requirements.txt ] && /opt/flask-app/venv/bin/pip install -r /opt/flask-app/requirements.txt || true
+            /opt/flask-app/venv/bin/pip install gunicorn
           "
+
 
       - name: Create/refresh systemd unit (flask-app.service)
         env:
