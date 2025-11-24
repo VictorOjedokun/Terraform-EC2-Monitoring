@@ -8,81 +8,116 @@ on:
         required: true
         default: "test"
 
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Create SSH key file
         run: |
           echo "${{ secrets.EC2_SSH_KEY }}" > ec2_key.pem
           chmod 600 ec2_key.pem
 
-      # Ensure the directory structure exists on EC2
-      - name: Ensure directory structure exists
+      - name: Ensure base packages on EC2 (python3-venv, pip, rsync)
         run: |
           ssh -o StrictHostKeyChecking=no -i ec2_key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
-            sudo mkdir -p /opt/flask-app/app &&
-            sudo mkdir -p /opt/flask-app/logs &&
-            sudo chown ubuntu:ubuntu /opt/flask-app -R
+            set -e
+            sudo apt-get update -y
+            sudo apt-get install -y python3-venv python3-pip rsync
           "
 
-      # Sync code using rsync (faster and safer than scp)
-      - name: Sync app to EC2
-        run: |
-          rsync -avz --exclude '.git' --exclude '__pycache__' -e "ssh -o StrictHostKeyChecking=no -i ec2_key.pem" \
-          . ubuntu@${{ secrets.EC2_PUBLIC_IP }}:/opt/flask-app/app
-
-      # Create virtual environment and install requirements
-      - name: Install Python dependencies
+      - name: Ensure directory structure
         run: |
           ssh -o StrictHostKeyChecking=no -i ec2_key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
-            cd /opt/flask-app/app &&
-            python3 -m venv venv ||
-            echo 'venv exists' &&
-            source venv/bin/activate &&
-            pip install --upgrade pip &&
-            pip install -r requirements.txt
+            set -e
+            sudo mkdir -p /opt/flask-app/app /opt/flask-app/logs
+            sudo chown -R ubuntu:ubuntu /opt/flask-app
           "
 
-      # Restart Flask systemd service
-      - name: Restart Flask (Gunicorn) service
+      - name: Sync code to EC2
+        run: |
+          rsync -avz --delete \
+            --exclude '.git' --exclude '__pycache__' --exclude '.github' \
+            -e "ssh -o StrictHostKeyChecking=no -i ec2_key.pem" \
+            . ubuntu@${{ secrets.EC2_PUBLIC_IP }}:/opt/flask-app/app
+
+      - name: Create/refresh virtualenv & install deps
         run: |
           ssh -o StrictHostKeyChecking=no -i ec2_key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
-            sudo systemctl restart flaskapp &&
-            sudo systemctl status flaskapp --no-pager
+            set -e
+            cd /opt/flask-app/app
+            [ -d venv ] || python3 -m venv venv
+            . venv/bin/activate
+            python -m pip install --upgrade pip
+            if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+            pip install gunicorn
           "
 
-      # Restart Prometheus
+      - name: Create/refresh flaskapp systemd unit (Gunicorn)
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ec2_key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
+            set -e
+            sudo bash -s <<'EOF'
+            cat >/etc/systemd/system/flaskapp.service <<'UNIT'
+            [Unit]
+            Description=Flask app (Gunicorn)
+            After=network.target
+
+            [Service]
+            User=ubuntu
+            Group=ubuntu
+            WorkingDirectory=/opt/flask-app/app
+            Environment=PYTHONUNBUFFERED=1
+            ExecStart=/opt/flask-app/app/venv/bin/gunicorn --workers 3 --bind 0.0.0.0:5000 app:app
+            Restart=always
+            RestartSec=3
+
+            [Install]
+            WantedBy=multi-user.target
+            UNIT
+
+            systemctl daemon-reload
+            systemctl enable flaskapp
+            systemctl restart flaskapp
+            systemctl status flaskapp --no-pager || true
+            EOF
+          "
+
       - name: Restart Prometheus
         run: |
           ssh -o StrictHostKeyChecking=no -i ec2_key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
-            sudo systemctl restart prometheus &&
-            sudo systemctl status prometheus --no-pager
+            sudo systemctl restart prometheus || true
+            sudo systemctl status prometheus --no-pager || true
           "
 
-      # Restart Grafana
       - name: Restart Grafana
         run: |
           ssh -o StrictHostKeyChecking=no -i ec2_key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
-            sudo systemctl restart grafana-server &&
-            sudo systemctl status grafana-server --no-pager
+            sudo systemctl restart grafana-server || true
+            sudo systemctl status grafana-server --no-pager || true
           "
 
-      # Health check Flask app
-      - name: Verify Flask app health
+      - name: Health check Flask (retry)
         run: |
-          curl -I http://${{ secrets.EC2_PUBLIC_IP }}:5000 || exit 1
+          for i in {1..10}; do
+            if curl -fsI http://${{ secrets.EC2_PUBLIC_IP }}:5000 >/dev/null; then
+              echo "Flask OK"; exit 0
+            fi
+            echo "Waiting for Flask... ($i/10)"
+            sleep 3
+          done
+          echo "Flask did not become healthy in time"; exit 1
 
-      # Health check Prometheus
-      - name: Verify Prometheus health
-        run: |
-          curl -I http://${{ secrets.EC2_PUBLIC_IP }}:9090 || exit 1
+      - name: Health check Prometheus
+        run: curl -fsI http://${{ secrets.EC2_PUBLIC_IP }}:9090
 
-      # Health check Grafana
-      - name: Verify Grafana health
-        run: |
-          curl -I http://${{ secrets.EC2_PUBLIC_IP }}:3000 || exit 1
+      - name: Health check Grafana
+        run: curl -fsI http://${{ secrets.EC2_PUBLIC_IP }}:3000
