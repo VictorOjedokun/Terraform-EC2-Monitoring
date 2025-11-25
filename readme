@@ -1,0 +1,209 @@
+
+# 📘 README — Terraform-Provisioned EC2 With Flask App, Prometheus, Grafana & GitHub Actions CI/CD
+
+This project provisions a fully-monitored Flask application running on AWS EC2 using Terraform, deployed continuously using GitHub Actions, and monitored with Prometheus, Node Exporter, and Grafana.
+
+---
+
+# 🚀 Architecture Overview
+
+### The system consists of:
+
+| Component                 | Purpose                                                                  |
+| ------------------------- | ------------------------------------------------------------------------ |
+| **Terraform**             | Provisions the EC2 instance, security groups, and installs all services. |
+| **EC2 Instance (Ubuntu)** | Hosts Flask app, Prometheus, Node Exporter, and Grafana.                 |
+| **Flask App (port 5000)** | The application being deployed/monitored.                                |
+| **Prometheus (9090)**     | Scrapes metrics from Flask and Node Exporter.                            |
+| **Node Exporter (9100)**  | Collects system-level metrics (CPU, RAM, Disk, Network).                 |
+| **Grafana (3000)**        | Visualizes all metrics with dashboards.                                  |
+| **GitHub Actions**        | CI/CD pipeline that deploys code updates to EC2.                         |
+
+---
+
+# 🏗️ Step 1 — Provision EC2 With Terraform
+
+Terraform automates the creation and configuration of the EC2 instance.
+
+### The Terraform setup performs:
+
+✅ Creates EC2 instance
+✅ Installs Python and creates folders for your Flask app
+✅ Installs, configures and enables:
+
+ Prometheus
+ Node Exporter
+ Grafana
+ Systemd service for your Flask app (port 5000)
+ Makes Prometheus scrape:
+
+   Flask metrics (`/metrics`)
+   Node Exporter (`9100`)
+
+### Apply Terraform:
+
+```sh
+terraform init
+terraform apply
+```
+
+After completion, Terraform will output:
+
+ EC2 public IP
+ URLs for Flask app, Prometheus, and Grafana
+
+---
+
+# 🔄 Step 2 — Deploy Flask App With GitHub Actions CI/CD
+
+Every push to your repo (or manual trigger) deploys the latest version of the app to EC2.
+
+### GitHub Actions Workflow performs:
+
+1. Connects to EC2 via SSH using your GH secrets
+2. Syncs your repository to `/opt/flask-app`
+3. Creates/updates the Python virtual environment
+4. Installs dependencies (`requirements.txt`)
+5. Installs/updates a systemd service for Flask and restarts it
+6. Runs health checks to ensure the app is live
+
+---
+
+# 🔥 Step 3 — Access Services
+
+| Service           | URL                            |
+| ----------------- | ------------------------------ |
+| Flask App     | `http://<EC2-IP>:5000`         |
+| Prometheus    | `http://<EC2-IP>:9090`         |
+| Grafana       | `http://<EC2-IP>:3000`         |
+| Node Exporter | `http://<EC2-IP>:9100/metrics` |
+
+Grafana default login:
+
+```
+admin / admin
+```
+
+---
+
+# 📊 Step 4 — Add Grafana Dashboards for Flask Metrics
+
+### 1. Open Grafana → + → Create Dashboard
+
+### 2. Click Add Visualization
+
+### 3. Select Prometheus as the data source
+
+Now create the following panels:
+
+---
+
+## 🔹 Panel 1 — Request Rate
+
+Query
+
+```
+rate(flask_http_request_total[5m])
+```
+
+Settings
+
+ Title: Request Rate (req/sec)
+ Visualization: Time series
+
+---
+
+## 🔹 Panel 2 — Average Response Time
+
+Query
+
+```
+rate(flask_http_request_duration_seconds_sum[5m]) 
+  / rate(flask_http_request_duration_seconds_count[5m])
+```
+
+Settings
+
+ Title: Average Response Time
+ Visualization: Time series
+
+---
+
+## 🔹 Panel 3 — Total Requests
+
+Query
+
+```
+sum(flask_http_request_total)
+```
+
+Settings
+
+ Title: Total Requests
+ Visualization: Stat
+
+---
+
+## 🔹 Panel 4 — Requests by Endpoint
+
+Query
+
+```
+sum by (endpoint) (rate(flask_http_request_total[5m]))
+```
+
+Settings
+
+ Title: Requests by Endpoint
+ Visualization: Time series
+ Legend: `{{endpoint}}`
+
+---
+
+### ✔️ Save your dashboard
+
+Name it: Flask App Metrics
+
+---
+
+# 📥 Step 5 — Import Pre-Built System Dashboards
+
+Grafana has a powerful built-in dashboard for Node Exporter.
+
+### To import:
+
+1. In Grafana → click + → Import Dashboard
+2. Enter dashboard ID:
+
+```
+1860
+```
+
+3. Click Load
+4. Choose Prometheus as the data source
+5. Click Import
+
+### You now get system-level monitoring:
+
+ CPU usage
+ Memory usage
+ Disk load
+ Network throughput
+ I/O stats
+ Uptime
+ Load averages
+
+---
+
+# 🎉 Result
+
+Your system is now fully automated:
+
+ Terraform builds the infrastructure
+ GitHub Actions deploys your app on every update
+ Prometheus scrapes app/system metrics
+ Grafana gives live dashboards for performance & health
+
+A complete, production-grade monitoring pipeline is now running on EC2.
+
+---
