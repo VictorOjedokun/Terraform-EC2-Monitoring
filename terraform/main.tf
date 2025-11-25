@@ -90,7 +90,7 @@ resource "aws_instance" "app" {
     volume_type = "gp3"
   }
 
-   user_data = <<-EOF
+  user_data = <<-EOF
               #!/bin/bash
               set -e
               exec > >(tee /var/log/user-data.log)
@@ -133,6 +133,10 @@ resource "aws_instance" "app" {
                   static_configs:
                     - targets: ['localhost:5000']
                   metrics_path: '/metrics'
+
+                - job_name: 'node-exporter'
+                  static_configs:
+                    - targets: ['localhost:9100']
               PROM
 
               # Create Prometheus systemd service
@@ -171,6 +175,28 @@ resource "aws_instance" "app" {
                   isDefault: true
               GRAF
 
+              # Install Node Exporter
+              echo "Installing Node Exporter..."
+              cd /tmp
+              wget https://github.com/prometheus/node_exporter/releases/download/v1.7.0/node_exporter-1.7.0.linux-amd64.tar.gz
+              tar xvfz node_exporter-1.7.0.linux-amd64.tar.gz
+              mv node_exporter-1.7.0.linux-amd64/node_exporter /usr/local/bin/
+              
+              # Create Node Exporter systemd service
+              cat > /etc/systemd/system/node-exporter.service <<'NODESVC'
+              [Unit]
+              Description=Node Exporter
+              After=network.target
+
+              [Service]
+              Type=simple
+              User=ubuntu
+              ExecStart=/usr/local/bin/node_exporter
+
+              [Install]
+              WantedBy=multi-user.target
+              NODESVC
+
               # Create Flask systemd service
               cat > /etc/systemd/system/flask-app.service <<'FLASKSVC'
               [Unit]
@@ -198,9 +224,12 @@ resource "aws_instance" "app" {
               systemctl start prometheus
               systemctl enable grafana-server
               systemctl start grafana-server
+              systemctl enable node-exporter
+              systemctl start node-exporter
 
               echo "Setup complete! Ready for GitHub Actions deployment."
               EOF
+
   tags = {
     Name = "flask-app-instance"
   }
@@ -208,8 +237,8 @@ resource "aws_instance" "app" {
 
 # Outputs
 output "instance_ip" {
-  value = aws_instance.app.public_ip
-  description = "Public IP of your EC2 instance"
+  value       = aws_instance.app.public_ip
+  description = "Public IP - Add this to GitHub Secrets as EC2_HOST"
 }
 
 output "ssh_command" {
