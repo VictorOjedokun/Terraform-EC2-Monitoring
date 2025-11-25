@@ -110,24 +110,16 @@ jobs:
             
             # Wait and check status
             sleep 5
+            
+            # Show detailed logs if failed
+            if ! sudo systemctl is-active --quiet flask-app; then
+              echo "Flask app failed to start. Showing logs:"
+              sudo journalctl -u flask-app -n 50 --no-pager
+              exit 1
+            fi
+            
             sudo systemctl status flask-app --no-pager
           ENDSSH
-
-      - name: Health Check
-        env:
-          HOST: ${{ secrets.EC2_HOST }}
-        run: |
-          echo "Waiting for app to start..."
-          sleep 5
-          
-          # Test health endpoint
-          if curl -f http://$HOST:5000/health; then
-            echo "✅ Deployment successful!"
-            echo "🌐 App: http://$HOST:5000"
-          else
-            echo "❌ Health check failed"
-            exit 1
-          fi
 
       - name: Health Check
         env:
