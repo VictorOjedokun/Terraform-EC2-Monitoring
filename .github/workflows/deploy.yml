@@ -1,21 +1,11 @@
 name: Deploy Flask App
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
-    inputs:
-      environment:
-        description: 'The environment to deploy to'
-        required: true
-        default: 'dev'
-        type: choice
-        options:
-          - production
-          - qa
-          - dev
-concurrency:
-  group: deploy-${{ github.ref }}
-  cancel-in-progress: true
-  
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -103,6 +93,15 @@ jobs:
             cd /opt/flask-app
             /opt/flask-app/venv/bin/pip install --upgrade pip
             /opt/flask-app/venv/bin/pip install -r requirements.txt
+            
+            # Test if app can import correctly
+            echo "Testing app import..."
+            cd /opt/flask-app
+            /opt/flask-app/venv/bin/python -c "import app; print('App imported successfully')" || {
+              echo "Failed to import app. Checking Python error:"
+              /opt/flask-app/venv/bin/python -c "import app"
+              exit 1
+            }
             
             # Restart Flask app
             echo "Restarting Flask app..."
