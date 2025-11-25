@@ -12,7 +12,10 @@ on:
           - production
           - qa
           - dev
-
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+  
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -20,6 +23,21 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+
+      - name: Verify files exist and have content
+        run: |
+          echo "Checking app.py..."
+          if [ ! -s app.py ]; then
+            echo "ERROR: app.py is missing or empty!"
+            exit 1
+          fi
+          echo "Checking requirements.txt..."
+          if [ ! -s requirements.txt ]; then
+            echo "ERROR: requirements.txt is missing or empty!"
+            exit 1
+          fi
+          echo "Files verified successfully"
+          ls -lh app.py requirements.txt
 
       - name: Deploy to EC2
         env:
@@ -32,8 +50,27 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H $HOST >> ~/.ssh/known_hosts
           
-          # Copy app files to EC2
-          scp -i ~/.ssh/id_rsa -r app.py requirements.txt ubuntu@$HOST:/tmp/
+          # Copy app files to EC2 (to /tmp first)
+          echo "Copying files to EC2..."
+          scp -i ~/.ssh/id_rsa app.py requirements.txt ubuntu@$HOST:/tmp/
+          
+          # Verify files were copied and have content
+          ssh -i ~/.ssh/id_rsa ubuntu@$HOST << 'ENDSSH'
+            echo "Verifying copied files..."
+            ls -lh /tmp/app.py /tmp/requirements.txt
+            
+            if [ ! -s /tmp/app.py ]; then
+              echo "ERROR: app.py is empty after copy!"
+              exit 1
+            fi
+            
+            if [ ! -s /tmp/requirements.txt ]; then
+              echo "ERROR: requirements.txt is empty after copy!"
+              exit 1
+            fi
+            
+            echo "Files verified on EC2"
+          ENDSSH
           
           # Deploy on EC2
           ssh -i ~/.ssh/id_rsa ubuntu@$HOST << 'ENDSSH'
@@ -42,9 +79,14 @@ jobs:
             # Create app directory if it doesn't exist
             sudo mkdir -p /opt/flask-app
             
-            # Move files to app directory
-            sudo cp /tmp/app.py /opt/flask-app/
-            sudo cp /tmp/requirements.txt /opt/flask-app/
+            # Move files from /tmp to app directory
+            echo "Moving files to /opt/flask-app..."
+            sudo cp /tmp/app.py /opt/flask-app/app.py
+            sudo cp /tmp/requirements.txt /opt/flask-app/requirements.txt
+            
+            # Verify files in final location
+            echo "Verifying files in /opt/flask-app..."
+            ls -lh /opt/flask-app/app.py /opt/flask-app/requirements.txt
             
             # Create virtual environment if it doesn't exist
             if [ ! -d "/opt/flask-app/venv" ]; then
@@ -53,18 +95,39 @@ jobs:
               sudo python3 -m venv venv
             fi
             
+            # Fix ownership
+            sudo chown -R ubuntu:ubuntu /opt/flask-app
+            
             # Install dependencies
+            echo "Installing dependencies..."
             cd /opt/flask-app
-            sudo /opt/flask-app/venv/bin/pip install --upgrade pip
-            sudo /opt/flask-app/venv/bin/pip install -r requirements.txt
+            /opt/flask-app/venv/bin/pip install --upgrade pip
+            /opt/flask-app/venv/bin/pip install -r requirements.txt
             
             # Restart Flask app
+            echo "Restarting Flask app..."
             sudo systemctl restart flask-app
             
             # Wait and check status
-            sleep 3
+            sleep 5
             sudo systemctl status flask-app --no-pager
           ENDSSH
+
+      - name: Health Check
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          echo "Waiting for app to start..."
+          sleep 5
+          
+          # Test health endpoint
+          if curl -f http://$HOST:5000/health; then
+            echo "✅ Deployment successful!"
+            echo "🌐 App: http://$HOST:5000"
+          else
+            echo "❌ Health check failed"
+            exit 1
+          fi
 
       - name: Health Check
         env:
