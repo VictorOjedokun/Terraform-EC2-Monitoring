@@ -1,10 +1,17 @@
 name: Deploy Flask App
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      environment:
+        description: 'The environment to deploy to'
+        required: true
+        default: 'prod'
+        type: choice
+        options:
+          - prod
+          - qa
+          - dev
 
 jobs:
   deploy:
